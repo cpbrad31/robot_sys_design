@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet Telemetry</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; background: #0f1419; color: #e6e6e6; }
+  h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+  #summary { color: #8b949e; margin-bottom: 1.25rem; font-size: .9rem; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 1rem; }
+  .card { background: #1a2029; border: 1px solid #2b3440; border-radius: 8px; padding: .9rem 1rem; }
+  .card.offline { opacity: .45; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: .5rem; font-size: .85rem; }
+  .id { font-weight: 600; font-size: 1rem; }
+  .muted { color: #8b949e; }
+  .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+  .IDLE { background: #3b4552; } .RUNNING { background: #1f6f43; }
+  .CHARGING { background: #8a6d1d; } .ERROR { background: #a3312f; } .OFFLINE { background: #444; }
+  .PAUSED { background: #3a5a9b; }
+  .DOWNLOADING { background: #1f6f9b; } .REBOOTING { background: #7b4fb8; }
+  .TRIAL_BOOT { background: #b86a1f; } .ROLLING_BACK { background: #9b2f6f; }
+  .slot { color: #8b949e; } .slot.active { color: #e6e6e6; font-weight: 600; }
+  .result-committed { color: #3fb950; }
+  .result-rolled_back, .result-download_failed { color: #d9534f; }
+  .result-none { color: #8b949e; }
+  .bar { height: 8px; background: #2b3440; border-radius: 4px; overflow: hidden; margin-top: .3rem; }
+  .bar > div { height: 100%; transition: width .4s; }
+  button.cmd { width: 100%; margin-top: .75rem; padding: .35rem; border-radius: 6px; border: 1px solid #3b4552;
+               background: #232b36; color: #e6e6e6; font-size: .85rem; cursor: pointer; }
+  button.cmd:hover:not(:disabled) { background: #2d3745; }
+  button.cmd:disabled { opacity: .4; cursor: not-allowed; }
+  .card { cursor: pointer; }
+  .card.selected { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff; }
+
+  #drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 520px; max-width: 100vw; background: #141a22;
+            border-left: 1px solid #2b3440; padding: 1.25rem; overflow-y: auto; display: none;
+            box-shadow: -8px 0 24px rgba(0,0,0,.4); }
+  #drawer.open { display: block; }
+  #drawer-head { display: flex; justify-content: space-between; align-items: center; }
+  #drawer-head h2 { font-size: 1.1rem; margin: 0; }
+  #drawer-close { background: none; border: none; color: #8b949e; font-size: 1.4rem; cursor: pointer; }
+  #drawer-summary { color: #8b949e; font-size: .85rem; margin: .4rem 0 1rem; }
+  #battery-chart svg { width: 100%; height: auto; display: block; background: #0f1419; border: 1px solid #2b3440;
+                       border-radius: 6px; }
+  #chart-caption { color: #8b949e; font-size: .75rem; margin: .35rem 0 1.1rem; }
+  .grid-line { stroke: #232b36; stroke-width: 1; }
+  .axis-label { fill: #8b949e; font-size: 10px; }
+  .battery-line { fill: none; stroke: #58a6ff; stroke-width: 1.75; stroke-linejoin: round; }
+  .pt { fill: #58a6ff; } .pt.late { fill: #e0a800; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: #8b949e; font-weight: 500; padding: .3rem .4rem; border-bottom: 1px solid #2b3440;
+       position: sticky; top: 0; background: #141a22; }
+  td { padding: .3rem .4rem; border-bottom: 1px solid #1f2731; }
+  tr.late td { background: rgba(224, 168, 0, .12); }
+  .tag { color: #e0a800; font-weight: 600; font-size: .7rem; }
+</style>
+</head>
+<body>
+<h1>Fleet Telemetry</h1>
+<div id="summary">connecting…</div>
+<div id="grid"></div>
+
+<aside id="drawer">
+  <div id="drawer-head">
+    <h2 id="drawer-title"></h2>
+    <button id="drawer-close" aria-label="Close">×</button>
+  </div>
+  <div id="drawer-summary"></div>
+  <div id="battery-chart"></div>
+  <div id="chart-caption">Battery level (%) by sample time. Amber dots were delivered late (buffered during an outage).</div>
+  <table>
+    <thead><tr><th>seq</th><th>sampled</th><th>received</th><th>delay</th><th>status</th><th>fw</th><th>batt</th></tr></thead>
+    <tbody id="log-body"></tbody>
+  </table>
+</aside>
+
+<template id="card-template">
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <span class="id" data-field="robot_id"></span>
+      <span class="badge" data-field="status"></span>
+    </div>
+    <div class="row"><span class="muted">firmware</span><span data-field="firmware"></span></div>
+    <div class="row"><span class="muted">slots</span><span data-field="slots"></span></div>
+    <div class="row"><span class="muted">last update</span><span data-field="last_update"></span></div>
+    <div class="row"><span class="muted">battery</span><span data-field="battery"></span></div>
+    <div class="bar"><div data-field="battery_bar"></div></div>
+    <div class="row"><span class="muted">last seen</span><span data-field="last_seen"></span></div>
+    <button class="cmd" data-kind="command" data-field="pause_button"></button>
+    <button class="cmd" data-kind="firmware" data-field="update_button"></button>
+  </div>
+</template>
+
+<script>
+const grid = document.getElementById("grid");
+const cards = new Map(); // robot_id -> card element
+
+const batteryColor = pct => pct < 20 ? "#d9534f" : pct < 50 ? "#e0a800" : "#3fb950";
+const field = (card, name) => card.querySelector(`[data-field="${name}"]`);
+
+function createCard(robotId) {
+  const card = document.getElementById("card-template").content.firstElementChild.cloneNode(true);
+  field(card, "robot_id").textContent = robotId;
+  card.querySelectorAll("button.cmd").forEach(button => { button.dataset.robot = robotId; });
+  grid.appendChild(card);
+  return card;
+}
+
+// Both slots, always in A, B order, with the one the robot is running from highlighted.
+function slotsHtml(r) {
+  const other = r.active_slot === "A" ? "B" : "A";
+  const versions = {[r.active_slot]: r.firmware_version, [other]: r.inactive_slot_version};
+  return ["A", "B"].map(name => {
+    const version = versions[name] ? `v${versions[name]}` : "—";
+    return `<span class="slot ${name === r.active_slot ? "active" : ""}">${name} ${version}</span>`;
+  }).join(" · ");
+}
+
+const UPDATE_RESULT_LABELS = {
+  none: "—", committed: "committed", rolled_back: "rolled back", download_failed: "download failed",
+};
+
+// What the Update button should say and whether it can be pressed, given the robot's state.
+function updateButtonState(r) {
+  if (r.updating) return {label: "Updating…", enabled: false};
+  if (latestFirmware === null) return {label: "Update", enabled: false};
+  if (r.firmware_version === latestFirmware) return {label: "Up to date", enabled: false};
+  return {label: `Update to v${latestFirmware}`, enabled: r.connected};
+}
+
+// Update an existing card in place. Cards and buttons are never rebuilt, so a
+// click that straddles a refresh still lands on the same element.
+function updateCard(card, r) {
+  const status = r.online ? r.status : "OFFLINE";
+  card.classList.toggle("offline", !r.online);
+
+  const badge = field(card, "status");
+  badge.textContent = status;
+  badge.className = `badge ${status}`;
+
+  field(card, "firmware").textContent = `v${r.firmware_version}`;
+  field(card, "slots").innerHTML = slotsHtml(r);
+  const lastUpdate = field(card, "last_update");
+  lastUpdate.textContent = UPDATE_RESULT_LABELS[r.last_update_result] ?? r.last_update_result;
+  lastUpdate.className = `result-${r.last_update_result}`;
+  field(card, "battery").textContent = `${r.battery_level.toFixed(1)}%`;
+  const bar = field(card, "battery_bar");
+  bar.style.width = `${r.battery_level}%`;
+  bar.style.background = batteryColor(r.battery_level);
+  field(card, "last_seen").textContent = `${r.last_seen_age_s.toFixed(1)}s ago · #${r.seq}`;
+
+  const pauseButton = field(card, "pause_button");
+  const command = r.status === "PAUSED" ? "resume" : "pause";
+  pauseButton.dataset.command = command;
+  pauseButton.textContent = command === "pause" ? "Pause" : "Resume";
+  // A robot mid-update is out of service, so pausing it is meaningless.
+  pauseButton.disabled = !r.connected || r.updating || pauseButton.dataset.pending === "true";
+
+  const updateButton = field(card, "update_button");
+  const update = updateButtonState(r);
+  updateButton.dataset.version = latestFirmware ?? "";
+  updateButton.textContent = update.label;
+  updateButton.disabled = !update.enabled || updateButton.dataset.pending === "true";
+}
+
+function summarize(robots) {
+  const online = robots.filter(r => r.online);
+  const errors = online.filter(r => r.status === "ERROR").length;
+  const paused = online.filter(r => r.status === "PAUSED").length;
+  const updating = online.filter(r => r.updating).length;
+  return `${online.length}/${robots.length} online · ${paused} paused · ${updating} updating · ${errors} in error`;
+}
+
+function render(robots) {
+  document.getElementById("summary").textContent = summarize(robots);
+  for (const r of robots) {
+    if (!cards.has(r.robot_id)) cards.set(r.robot_id, createCard(r.robot_id));
+    updateCard(cards.get(r.robot_id), r);
+  }
+}
+
+let latestFirmware = null; // newest version the server can roll out
+
+async function loadFirmwareInfo() {
+  latestFirmware = (await (await fetch("/api/firmware")).json()).latest;
+}
+
+async function refresh() {
+  try {
+    if (latestFirmware === null) await loadFirmwareInfo();
+    render(await (await fetch("/api/robots")).json());
+  } catch (e) {
+    document.getElementById("summary").textContent = "server unreachable";
+  }
+}
+
+async function postJson(url, body) {
+  return fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+}
+
+async function sendCommand(robotId, command) {
+  const res = await postJson(`/api/robots/${encodeURIComponent(robotId)}/command`, {command});
+  if (!res.ok) alert(`Command failed: ${(await res.json()).error}`);
+}
+
+async function startFirmwareUpdate(robotId, version) {
+  const res = await postJson(`/api/robots/${encodeURIComponent(robotId)}/firmware`, {version});
+  if (!res.ok) alert(`Update failed: ${(await res.json()).error}`);
+}
+
+// --- per-robot log drawer ---------------------------------------------------
+
+const drawer = document.getElementById("drawer");
+let selectedRobot = null;
+let lastLogKey = null; // skip re-rendering the table when nothing changed
+
+const clock = sec => new Date(sec * 1000).toLocaleTimeString([], {hour12: false});
+
+// Pure: log entries in, SVG markup out. X is the robot's *sample* time (sent_at), not the arrival
+// time, so a burst delivered after an outage is drawn where the data was actually measured.
+// Y is fixed at 0-100% so charge/discharge slopes are comparable between robots.
+function batteryChartSvg(entries) {
+  if (!entries.length) return "";
+  const W = 480, H = 170, LEFT = 32, RIGHT = 8, TOP = 8, BOTTOM = 20;
+  const plotW = W - LEFT - RIGHT, plotH = H - TOP - BOTTOM;
+
+  const points = entries.slice().sort((a, b) => a.sent_at - b.sent_at);
+  const t0 = points[0].sent_at;
+  const t1 = points[points.length - 1].sent_at;
+  const span = Math.max(t1 - t0, 1); // avoid dividing by zero with a single point
+  const x = t => LEFT + ((t - t0) / span) * plotW;
+  const y = pct => TOP + (1 - pct / 100) * plotH;
+
+  const grid = [0, 25, 50, 75, 100].map(pct => `
+    <line class="grid-line" x1="${LEFT}" x2="${W - RIGHT}" y1="${y(pct)}" y2="${y(pct)}"/>
+    <text class="axis-label" x="${LEFT - 5}" y="${y(pct) + 3}" text-anchor="end">${pct}</text>`).join("");
+
+  const line = points.map(p => `${x(p.sent_at).toFixed(1)},${y(p.battery_level).toFixed(1)}`).join(" ");
+
+  const dots = points.map(p => `
+    <circle class="pt ${p.late ? "late" : ""}" cx="${x(p.sent_at).toFixed(1)}" cy="${y(p.battery_level).toFixed(1)}"
+            r="${p.late ? 3.5 : 2}">
+      <title>#${p.seq} · ${clock(p.sent_at)} · ${p.battery_level.toFixed(1)}% · ${p.status}${p.late ? ` · delivered ${p.delay_s}s late` : ""}</title>
+    </circle>`).join("");
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Battery level over time">
+      ${grid}
+      <polyline class="battery-line" points="${line}"/>
+      ${dots}
+      <text class="axis-label" x="${LEFT}" y="${H - 5}">${clock(t0)}</text>
+      <text class="axis-label" x="${W - RIGHT}" y="${H - 5}" text-anchor="end">${clock(t1)}</text>
+    </svg>`;
+}
+
+function renderLog(entries) {
+  document.getElementById("battery-chart").innerHTML = batteryChartSvg(entries);
+  const late = entries.filter(e => e.late).length;
+  document.getElementById("drawer-summary").textContent =
+    `${entries.length} entries received · ${late} delivered late (buffered during an outage)`;
+
+  const rows = entries.slice().reverse().map(e => `
+    <tr class="${e.late ? "late" : ""}">
+      <td>#${e.seq}</td>
+      <td>${clock(e.sent_at)}</td>
+      <td>${clock(e.received_at)}</td>
+      <td>${e.late ? `<span class="tag">+${e.delay_s}s late</span>` : `${e.delay_s}s`}</td>
+      <td>${e.status}</td>
+      <td>v${e.firmware_version} · ${e.active_slot}</td>
+      <td>${e.battery_level.toFixed(1)}%</td>
+    </tr>`);
+  document.getElementById("log-body").innerHTML = rows.join("");
+}
+
+async function refreshLog() {
+  if (!selectedRobot) return;
+  try {
+    const res = await fetch(`/api/robots/${encodeURIComponent(selectedRobot)}/heartbeats?limit=100`);
+    const entries = await res.json();
+    const last = entries[entries.length - 1];
+    const key = `${selectedRobot}:${entries.length}:${last ? last.seq : ""}:${entries.filter(e => e.late).length}`;
+    if (key === lastLogKey) return;
+    lastLogKey = key;
+    renderLog(entries);
+  } catch (e) { /* the next tick retries */ }
+}
+
+function selectRobot(robotId) {
+  selectedRobot = robotId;
+  lastLogKey = null;
+  cards.forEach((card, id) => card.classList.toggle("selected", id === robotId));
+  document.getElementById("drawer-title").textContent = `${robotId} — received telemetry`;
+  drawer.classList.add("open");
+  refreshLog();
+}
+
+function closeDrawer() {
+  selectedRobot = null;
+  drawer.classList.remove("open");
+  cards.forEach(card => card.classList.remove("selected"));
+}
+
+document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+const ACTIONS = {
+  command: button => sendCommand(button.dataset.robot, button.dataset.command),
+  firmware: button => startFirmwareUpdate(button.dataset.robot, button.dataset.version),
+};
+const PENDING_MS = {command: 2500, firmware: 4000}; // roughly one heartbeat plus a refresh
+
+grid.addEventListener("click", async e => {
+  const button = e.target.closest("button.cmd");
+  if (!button) {
+    const card = e.target.closest(".card");
+    if (card) selectRobot(card.querySelector("[data-field=robot_id]").textContent);
+    return;
+  }
+  if (button.disabled) return;
+  // Stay disabled until the robot's next heartbeat reflects the new status, to avoid double-sends.
+  const kind = button.dataset.kind;
+  button.dataset.pending = "true";
+  button.disabled = true;
+  try {
+    await ACTIONS[kind](button);
+  } finally {
+    // Re-enable after a heartbeat interval; the next refresh will show the new status.
+    setTimeout(() => { button.dataset.pending = "false"; }, PENDING_MS[kind]);
+  }
+});
+
+refresh();
+setInterval(() => { refresh(); refreshLog(); }, 1000);
+</script>
+</body>
+</html>
