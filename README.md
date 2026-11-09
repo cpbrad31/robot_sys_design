@@ -1,6 +1,17 @@
 # Robot Fleet Monitor (simulation)
 
-Simulated fleet of robot arms. Each robot buffers telemetry locally and delivers it to a local server over HTTP, and keeps a websocket open to receive commands (pause/resume/firmware update). Robots periodically lose connectivity (one at a time); the server receives the buffered backlog as a burst when they reconnect. Live dashboard included. Python 3.10+.
+This was an educational project to understand system design tradeoffs for an application to monitor and control a fleet of robot arms deployed in the field. Key learnings and concepts:
+
+Telemetry: A hybrid strategy for accesssing robot telemetry data helps us get important data frequently (health status) while shifting higher bandwidth transfers to less frequent, offline syncs (camera and motion 
+torque data)
+
+Data and control plane: We can separate the flow of data between the robot and a server into data and control planes - data plane is jsut sending information about the robot vs. the control plane is driving action (i.e. pause, firmware update)
+
+Robot system design: We can think about a robot arms control in terms of the control loop (air gapped from outside connections for safety) and the cloud agent (responsible for communicaiton to the outside server)
+
+Firmware updates: To reduce risk of updates causing issues you have to triage manually with a technician, it's best to keep multiple firmware versions on device so that a failed boot can rollback. If an updated version fails to pass a predefined set of health checks (actions you don't want to lose, like server comms and home pose) then rollabck to the last one. Fleetwide deployments also happen gradully - deploy to a test set of canaries before ramping across the rest of the fleet.
+
+
 
 ## Setup (once)
 
